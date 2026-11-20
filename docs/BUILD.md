@@ -80,7 +80,9 @@ cargo xtask                                     every command
 ## How it builds
 
 - **The service**: static, musl, for the Rust target of each
-  architecture, in `rust-musl-cross` (Docker volume `routeh-cargo`).
+  architecture, in `rust-musl-cross` with the image's own toolchain
+  (a plugin's `rust-toolchain.toml` pins its host builds only; Docker
+  volume `routeh-cargo`).
 - **A module**: with the OpenWrt SDK of the exact release and target, in
   an amd64 image (Docker volume `routeh-sdk`): the module alone, with
   the kernel's make flags, not `make package`. Its kernel package

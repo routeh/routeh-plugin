@@ -4,8 +4,9 @@
 //! - the OpenWrt SDK, in the image of `openwrt/Dockerfile` (linux/amd64:
 //!   the SDK's tools are x86_64), with SDKs kept in the volume `routeh-sdk`
 //!   (`ROUTEH_SDK_VOLUME` names another);
-//! - cargo for a musl target, in `rust-musl-cross` (its cross toolchain),
-//!   with the registry in the volume `routeh-cargo` (`ROUTEH_CARGO_VOLUME`).
+//! - cargo for a musl target, in `rust-musl-cross` (its cross toolchain,
+//!   whatever toolchain the plugin pins for its host), with the registry
+//!   in the volume `routeh-cargo` (`ROUTEH_CARGO_VOLUME`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -58,6 +59,10 @@ pub fn cargo(
                 volume("ROUTEH_CARGO_VOLUME", "routeh-cargo")
             ),
         ]);
+    // The image's own toolchain, the one with the musl target and its
+    // linker: a plugin's rust-toolchain.toml would make rustup fetch the
+    // toolchain it names, without that target, in every run.
+    c.args(["-e", "RUSTUP_TOOLCHAIN=stable"]);
     for (k, v) in env {
         c.args(["-e", &format!("{k}={v}")]);
     }

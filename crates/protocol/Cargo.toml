@@ -1,0 +1,19 @@
+[package]
+name = "routeh-plugin-protocol"
+description = "The contract between the routeh router and a plugin: the manifest, the types of its settings and the channel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+# No unit tests inside the crate: its tests are tests/all.
+test = false
+doctest = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+regex.workspace = true

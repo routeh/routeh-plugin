@@ -1,0 +1,47 @@
+# The manifest of the records example: a page with a group of records
+# keyed by their host, a value of each record and an action on each.
+id = "records"
+name = "Records"
+version = "0.1.0"
+api = 1
+
+[service]
+command = "bin/records"
+
+[page]
+title = "Dynamic DNS"
+icon = "globe"
+
+[settings]
+token = { type = "text", secret = true, required = true, label = "API token" }
+
+[settings.records]
+type = "group"
+label = "Records"
+key = "host"
+max_rows = 16
+columns = ["host", "domain", "uplink"]
+
+[settings.records.fields]
+host = { type = "text", required = true, label = "Host" }
+domain = { type = "text", required = true, label = "Domain" }
+uplink = { type = "uplink", required = true, label = "Uplink" }
+
+[[form]]
+title = "Account"
+fields = ["token"]
+
+[[form]]
+title = "Records"
+fields = ["records"]
+
+[[status]]
+of = "records"
+key = "updates"
+label = "Updates"
+type = "count"
+
+[[actions]]
+key = "update_now"
+label = "Update now"
+of = "records"

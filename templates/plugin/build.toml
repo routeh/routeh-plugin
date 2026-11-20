@@ -1,0 +1,18 @@
+# What `cargo xtask build` builds (routeh-plugin-build, project.rs).
+targets = ["armsr/armv8"]
+
+[service]
+# package = "my-plugin-ctl"      # the cargo package of bin/<program>; <program> by default
+# version_env = "MY_VERSION"     # set to the plugin's version; ROUTEH_PLUGIN_VERSION by default
+
+# One for each module of [modules] load of plugin/manifest.toml:
+# [[module]]
+# name = "mymod"
+# dir = "kmod/mymod"            # its OpenWrt Makefile (and patches/)
+# version_file = "src/version.h"
+# version_define = "MYMOD_VERSION"
+# pins_version = true           # the plugin's version is <its version>-r<n>
+
+[qemu]
+# tests = ["live"]              # the workspace's test programs run in the guest
+# env = { LIVE = "1" }

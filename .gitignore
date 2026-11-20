@@ -1,0 +1,11 @@
+/target
+/coverage/
+*.profraw
+*.profdata
+
+# editors and OS metadata
+/.idea
+/.vscode
+.DS_Store
+*.swp
+*~

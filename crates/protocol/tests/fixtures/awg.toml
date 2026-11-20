@@ -1,0 +1,82 @@
+# The manifest of docs/TUNNELS.md (The manifest), with every field of
+# the kind written out.
+id = "awg"
+name = "AmneziaWG"
+version = "0.3.1"
+api = 1
+
+requires = [
+  "kmod-udptunnel4", "kmod-udptunnel6",
+  "kmod-crypto-lib-chacha20poly1305", "kmod-crypto-lib-curve25519",
+]
+
+[modules]
+load = ["amneziawg"]
+kernel = "6.12.112~67e205f26d0458c4d12f1fd315216398-r1"
+
+[service]
+command = "bin/awg-ctl"
+capabilities = ["CAP_NET_ADMIN"]
+settle_within = "10s"
+
+[settings]
+log_level = { type = "choice", values = ["error", "info", "debug"], label = "Log level" }
+
+[[form]]
+title = "Logging"
+fields = ["log_level"]
+
+[[status]]
+key = "peers_up"
+label = "Peers up"
+type = "count"
+
+[tunnel]
+link_kind = "amneziawg"
+mtu = { default = 1380, min = 1280, max = 1420 }
+
+[[tunnel.status]]
+key = "last_handshake"
+label = "Last handshake"
+type = "time"
+
+[[tunnel.status]]
+key = "junk_packets"
+label = "Junk packets sent"
+type = "count"
+
+[[tunnel.form]]
+title = "Interface"
+fields = ["address", "listen_port", "private_key"]
+
+[[tunnel.form]]
+title = "Peer"
+fields = ["endpoint", "peer_public_key", "keepalive"]
+
+[[tunnel.form]]
+title = "Obfuscation"
+fields = ["jc", "jmin", "jmax", "s1", "h1", "h2", "i1", "header_protection_key"]
+folded = true
+
+[tunnel.settings]
+address         = { type = "ipv4_prefix", role = "address", required = true, label = "Address" }
+listen_port     = { type = "port", role = "listen", protocol = "udp", label = "Listen port" }
+private_key     = { type = "bytes", len = 32, secret = true, required = true, label = "Private key" }
+endpoint        = { type = "host_port", role = "endpoint", required = true, label = "Endpoint" }
+peer_public_key = { type = "bytes", len = 32, required = true, label = "Public key" }
+keepalive       = { type = "duration", max = "65535s", label = "Keepalive" }
+jc              = { type = "u8", max = 128, label = "Jc" }
+jmin            = { type = "u16", label = "Jmin" }
+jmax            = { type = "u16", label = "Jmax" }
+s1              = { type = "u16", label = "S1" }
+h1              = { type = "range", of = "u32", min = 5, label = "H1" }
+h2              = { type = "range", of = "u32", min = 5, label = "H2" }
+i1              = { type = "template", max_len = 4096, pattern = '(<[a-z][^<>]*>)*', label = "I1" }
+header_protection_key = { type = "bytes", len = 32, secret = true, label = "Header protection key" }
+
+[tunnel.constraints]
+requires = { keepalive = "endpoint" }
+
+[page]
+title = "AmneziaWG"
+icon = "shield"

@@ -1,0 +1,388 @@
+# A plugin's release, called by its repository's build.yml
+# (templates/plugin/): its bundles built, tested in QEMU, and published
+# one of two ways (docs/RELEASE.md):
+#
+#   publish_to: feed     proposed to the feed by a push to the feed's branch
+#                        plugin/<id>; the feed signs and shows them
+#   publish_to: s3       signed by the plugin's own key into its own feed in
+#                        an S3 bucket (any S3: s3_endpoint names it)
+#
+# Every step is a `cargo xtask` command of routeh-plugin-build, which the
+# plugin's xtask is.
+#
+#   a tag v<version>     every target of build.toml, stable OpenWrt
+#   by hand              a version, an OpenWrt release, some targets
+#   only_missing         the latest tag, for the targets the feed has no
+#                        bundle of it for (a new kernel): a daily schedule.
+#                        With s3, the index is signed again then too.
+
+name: plugin
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Tag of the version (v1.2-r1); empty: the tag pushed, else the latest tag"
+        type: string
+        default: ""
+      openwrt:
+        description: "OpenWrt release (25.12.6), or stable"
+        type: string
+        default: stable
+      targets:
+        description: "all, or targets separated by commas"
+        type: string
+        default: all
+      publish:
+        description: "Publish the bundles (publish_to says where)"
+        type: boolean
+        default: true
+      publish_to:
+        description: "feed (the managed feed) or s3 (the plugin's own feed in a bucket)"
+        type: string
+        default: feed
+      only_missing:
+        description: "Build only the targets the feed lacks (feed: needs feed_url)"
+        type: boolean
+        default: false
+      feed_repository:
+        description: "The feed's repository (owner/name)"
+        type: string
+        default: ""
+      feed_url:
+        description: "Where the feed is served (https://owner.github.io/feed)"
+        type: string
+        default: ""
+      s3_bucket:
+        type: string
+        default: ""
+      s3_prefix:
+        description: "The plugin's feed in the bucket (one writer: one plugin a prefix)"
+        type: string
+        default: ""
+      s3_endpoint:
+        description: "An S3-compatible endpoint (https://storage.googleapis.com); empty: AWS"
+        type: string
+        default: ""
+      s3_region:
+        type: string
+        default: us-east-1
+    secrets:
+      FEED_DEPLOY_KEY:
+        description: "publish_to feed: a deploy key of the feed's repository, with write access"
+        required: false
+      S3_SIGNING_KEY:
+        description: "publish_to s3: the plugin's own feed key, `ed25519-secret <base64>`"
+        required: false
+      S3_ACCESS_KEY_ID:
+        required: false
+      S3_SECRET_ACCESS_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  AWS_DEFAULT_REGION: ${{ inputs.s3_region }}
+  S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+  # The plugin's own feed: s3://<bucket>[/<prefix>]
+  S3_FEED: s3://${{ inputs.s3_bucket }}${{ inputs.s3_prefix && format('/{0}', inputs.s3_prefix) || '' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      id: ${{ steps.plan.outputs.id }}
+      version: ${{ steps.plan.outputs.version }}
+      targets: ${{ steps.plan.outputs.targets }}
+      rusts: ${{ steps.plan.outputs.rusts }}
+      qemu: ${{ steps.plan.outputs.qemu }}
+      empty: ${{ steps.plan.outputs.empty }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ref
+        name: The version to build
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ]; then ref=$VERSION
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then ref=$GITHUB_REF_NAME
+          else ref=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "$GITHUB_REF_NAME")
+          fi
+          git checkout -q "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - id: plan
+        name: Targets
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          OPENWRT: ${{ inputs.openwrt }}
+          WHICH: ${{ inputs.targets }}
+          ONLY_MISSING: ${{ inputs.only_missing }}
+          FEED_URL: ${{ inputs.feed_url }}
+          PUBLISH_TO: ${{ inputs.publish_to }}
+          # Only the steps that read or write the bucket have its keys.
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        run: |
+          case "$PUBLISH_TO" in feed|s3) ;; *) echo "::error::publish_to is feed or s3, not $PUBLISH_TO"; exit 1 ;; esac
+          id=$(cargo xtask id)
+          version=$(cargo xtask version)
+          case "$REF" in
+            v*) [ "$REF" = "v$version" ] || { echo "::error::tag $REF is not v$version of plugin/manifest.toml"; exit 1; } ;;
+          esac
+          if [ "$ONLY_MISSING" = true ]; then
+            if [ "$PUBLISH_TO" = s3 ]; then
+              index="$RUNNER_TEMP/index.json"
+              aws s3 ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} cp --quiet "$S3_FEED/index.json" "$index" || true
+            else
+              [ -n "$FEED_URL" ] || { echo "::error::only_missing needs feed_url"; exit 1; }
+              index="$FEED_URL/index.json"
+            fi
+            WHICH=$(cargo xtask missing --index "$index" --openwrt "$OPENWRT")
+          fi
+          if [ -z "$WHICH" ]; then
+            targets='[]'
+          else
+            targets=$(cargo xtask targets --openwrt "$OPENWRT" --targets "$WHICH")
+          fi
+          {
+            echo "id=$id"
+            echo "version=$version"
+            echo "targets=$targets"
+            echo "rusts=$(echo "$targets" | jq -c '[.[].rust] | unique')"
+            echo "qemu=$(echo "$targets" | jq -c 'map(select(.target == "armsr/armv8")) | .[0] // null')"
+            echo "empty=$(echo "$targets" | jq 'length == 0')"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### $id $version ($REF)"
+            [ "$targets" = '[]' ] && echo "Nothing to build: the feed has every target."
+            echo "$targets" | jq -r '.[] | "- \(.target) on OpenWrt \(.openwrt): \(.arch), kernel \(.kernel)"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  service:
+    needs: plan
+    if: needs.plan.outputs.empty != 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        rust: ${{ fromJSON(needs.plan.outputs.rusts) }}
+    name: service ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - run: cargo xtask service --rust "${{ matrix.rust }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: service-${{ matrix.rust }}
+          path: target/routeh/service/${{ matrix.rust }}/
+          if-no-files-found: error
+
+  bundle:
+    needs: [plan, service]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        t: ${{ fromJSON(needs.plan.outputs.targets) }}
+    name: ${{ matrix.t.target }} on ${{ matrix.t.openwrt }}
+    env:
+      SDK_DIR: ${{ github.workspace }}/../sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - name: The SDK's host packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential file gawk gettext libncurses-dev python3-setuptools rsync unzip zstd kmod
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}/*.tar.zst
+          key: sdk-${{ matrix.t.openwrt }}-${{ matrix.t.target }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: service-${{ matrix.t.rust }}
+          path: target/routeh/service/${{ matrix.t.rust }}
+      - name: Modules
+        run: cargo xtask kmod --openwrt "${{ matrix.t.openwrt }}" --target "${{ matrix.t.target }}" --native
+      - name: Bundle
+        run: |
+          cargo xtask bundle --openwrt "${{ matrix.t.openwrt }}" --target "${{ matrix.t.target }}"
+          cargo xtask verify "target/routeh/bundles/${{ matrix.t.bundle }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ strategy.job-index }}
+          path: target/routeh/bundles/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kmod-${{ strategy.job-index }}
+          path: target/routeh/kmod/
+
+  qemu:
+    needs: [plan, bundle]
+    if: needs.plan.outputs.qemu != 'null'
+    runs-on: ubuntu-24.04
+    name: OpenWrt in QEMU
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-arm qemu-efi-aarch64
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kmod-*
+          merge-multiple: true
+          path: target/routeh/kmod
+      - uses: actions/download-artifact@v4
+        with:
+          name: service-aarch64-unknown-linux-musl
+          path: target/routeh/service/aarch64-unknown-linux-musl
+      - name: The modules and the tests on OpenWrt
+        run: |
+          chmod +x target/routeh/service/*/*
+          cargo xtask qemu-test --openwrt "${{ fromJSON(needs.plan.outputs.qemu).openwrt }}"
+
+  propose:
+    needs: [plan, bundle, qemu]
+    # Only a version (a tag) is proposed; the QEMU test, when it ran, has to pass.
+    if: >-
+      always() && needs.bundle.result == 'success'
+      && (needs.qemu.result == 'success' || needs.qemu.result == 'skipped')
+      && startsWith(needs.plan.outputs.ref, 'v')
+      && inputs.publish && inputs.publish_to == 'feed'
+    runs-on: ubuntu-24.04
+    # One push to the branch at a time; a later one replaces it.
+    concurrency:
+      group: propose
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: bundles
+      - name: Push to the feed's branch plugin/${{ needs.plan.outputs.id }}
+        env:
+          DEPLOY_KEY: ${{ secrets.FEED_DEPLOY_KEY }}
+          FEED_REPOSITORY: ${{ inputs.feed_repository }}
+          ID: ${{ needs.plan.outputs.id }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          [ -n "$FEED_REPOSITORY" ] || { echo "::error::feed_repository is not set"; exit 1; }
+          [ -n "$DEPLOY_KEY" ] || { echo "::error::FEED_DEPLOY_KEY is not set"; exit 1; }
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/deploy_key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          umask 022
+          mkdir branch && cp bundles/*.tar branch/
+          cd branch
+          # The workflow that tells the feed a proposal came: its own
+          # workflow runs on its main branch when this one has run
+          # (workflow_run), and a branch's push runs only what the branch has.
+          mkdir -p .github/workflows
+          cat > .github/workflows/incoming.yml <<'YML'
+          name: incoming
+          on: push
+          permissions: {}
+          jobs:
+            proposed:
+              runs-on: ubuntu-24.04
+              steps:
+                - run: echo "Bundles proposed; the feed's workflow takes them."
+          YML
+          git init -q -b "plugin/$ID"
+          git add -A
+          git -c user.name="$ID build" -c user.email="$ID-build@users.noreply.github.com" \
+            commit -q -m "$ID $VERSION: $(ls *.tar | wc -l) bundle(s)"
+          git push -q --force "git@github.com:$FEED_REPOSITORY.git" "HEAD:refs/heads/plugin/$ID"
+          ls *.tar | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
+  s3:
+    needs: [plan, bundle, qemu]
+    # A version (a tag) built and tested, as for the feed; or nothing to
+    # build (only_missing): the index signed again, so it does not expire.
+    if: >-
+      always() && inputs.publish && inputs.publish_to == 's3'
+      && startsWith(needs.plan.outputs.ref, 'v')
+      && (needs.plan.outputs.empty == 'true'
+          || (needs.bundle.result == 'success'
+              && (needs.qemu.result == 'success' || needs.qemu.result == 'skipped')))
+    runs-on: ubuntu-24.04
+    # The plugin is its feed's only writer: one run at a time.
+    concurrency:
+      group: s3-${{ inputs.s3_bucket }}-${{ inputs.s3_prefix }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - if: needs.plan.outputs.empty != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: bundles
+      - name: Sign into ${{ env.S3_FEED }}
+        env:
+          SIGNING_KEY: ${{ secrets.S3_SIGNING_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          BUCKET: ${{ inputs.s3_bucket }}
+          PREFIX: ${{ inputs.s3_prefix }}
+        run: |
+          [ -n "$BUCKET" ] || { echo "::error::s3_bucket is not set"; exit 1; }
+          [ -n "$SIGNING_KEY" ] || { echo "::error::S3_SIGNING_KEY is not set"; exit 1; }
+          s3() { aws s3 ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} "$@"; }
+          key=${PREFIX:+$PREFIX/}index.json
+          mkdir -p site
+          # The index as it is: the plugin adds to it (none yet: a new feed).
+          if aws s3api ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"} head-object \
+               --bucket "$BUCKET" --key "$key" > /dev/null 2>&1; then
+            s3 cp --quiet "$S3_FEED/index.json" site/index.json
+            s3 cp --quiet "$S3_FEED/index.json.sig" site/index.json.sig
+          fi
+          umask 077
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/feed.key"
+          umask 022
+          set -- $(ls bundles/*.tar 2>/dev/null)
+          cargo xtask publish --feed site --key "$RUNNER_TEMP/feed.key" "$@" | tee "$RUNNER_TEMP/run.log"
+          rm -f "$RUNNER_TEMP/feed.key"
+          # The blobs first: the index never names one that is not there.
+          if [ -n "$(ls site/blobs)" ]; then
+            s3 cp --quiet --recursive site/blobs "$S3_FEED/blobs" \
+              --content-type application/x-tar --cache-control "public, max-age=31536000, immutable"
+          fi
+          s3 cp --quiet site/index.json "$S3_FEED/index.json" \
+            --content-type application/json --cache-control no-cache
+          s3 cp --quiet site/index.json.sig "$S3_FEED/index.json.sig" \
+            --content-type text/plain --cache-control no-cache
+          sed 's/^/- /' "$RUNNER_TEMP/run.log" >> "$GITHUB_STEP_SUMMARY"

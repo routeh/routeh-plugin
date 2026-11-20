@@ -1,0 +1,6 @@
+# What the feed shows of each plugin (routeh-plugin-build, feed.rs).
+# A plugin not named here: every version it proposed.
+#
+# [awg]
+# keep = 3                       # the newest versions per architecture and kernel
+# yank = ["3.1.20261113.2-r1"]   # not shown; the blob stays

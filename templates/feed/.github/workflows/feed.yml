@@ -1,0 +1,42 @@
+# The feed: what the plugins propose, signed and shown
+# (routeh-plugin's feed.yml and docs/RELEASE.md).
+#
+#   a plugin's push      its branch's `incoming` workflow ran
+#   feed.toml changed    a version yanked, `keep` changed
+#   every day            the index signed again (a new expires)
+#
+# Needs: the environment `feed` (deployments from main only) with the
+# secret FEED_SIGNING_KEY; Pages built by GitHub Actions; a ruleset on
+# main that only GitHub Actions may push.
+
+name: feed
+
+on:
+  workflow_run:
+    workflows: [incoming]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: [feed.toml]
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# One run at a time; each sees everything, so a waiting one is enough.
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    uses: routeh/routeh-plugin/.github/workflows/feed.yml@main
+    with:
+      tools_ref: main
+      refresh: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    secrets:
+      FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}

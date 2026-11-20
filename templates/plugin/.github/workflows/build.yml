@@ -1,0 +1,69 @@
+# The plugin's release: built, tested in QEMU, published
+# (routeh-plugin's plugin.yml and docs/RELEASE.md).
+#
+#   a tag v<version>   every target of build.toml, stable OpenWrt
+#   by hand            a version, an OpenWrt release, some targets
+#   every day          the latest tag, for targets the feed lacks (a new kernel)
+#
+# Published one of two ways:
+#
+#   the managed feed   the variables FEED_REPOSITORY (owner/feed) and
+#                      FEED_URL (https://owner.github.io/feed), the secret
+#                      FEED_DEPLOY_KEY
+#   its own bucket     publish_to: s3 and the s3_* inputs below (the
+#                      variables S3_BUCKET, S3_PREFIX, S3_ENDPOINT), the
+#                      secrets S3_SIGNING_KEY, S3_ACCESS_KEY_ID,
+#                      S3_SECRET_ACCESS_KEY
+
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag of the version; empty: the latest tag"
+        required: false
+      openwrt:
+        description: "OpenWrt release (25.12.6), or stable"
+        default: stable
+      targets:
+        description: "all, or targets separated by commas"
+        default: all
+      publish:
+        description: "Propose the bundles to the feed"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ inputs.version || github.ref_name }}-${{ inputs.openwrt || 'stable' }}
+
+jobs:
+  build:
+    uses: routeh/routeh-plugin/.github/workflows/plugin.yml@main
+    with:
+      version: ${{ inputs.version || '' }}
+      openwrt: ${{ inputs.openwrt || 'stable' }}
+      targets: ${{ inputs.targets || 'all' }}
+      publish: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+      only_missing: ${{ github.event_name == 'schedule' }}
+      # The managed feed:
+      feed_repository: ${{ vars.FEED_REPOSITORY }}
+      feed_url: ${{ vars.FEED_URL }}
+      # Or the plugin's own bucket instead:
+      # publish_to: s3
+      # s3_bucket: ${{ vars.S3_BUCKET }}
+      # s3_prefix: ${{ vars.S3_PREFIX }}
+      # s3_endpoint: ${{ vars.S3_ENDPOINT }}
+      # s3_region: auto
+    secrets:
+      FEED_DEPLOY_KEY: ${{ secrets.FEED_DEPLOY_KEY }}
+      # S3_SIGNING_KEY: ${{ secrets.S3_SIGNING_KEY }}
+      # S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      # S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}

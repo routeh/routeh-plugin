@@ -1,0 +1,22 @@
+[package]
+name = "routeh-plugin-bundle"
+description = "A routeh plugin's bundle and feed: the archive, SHA256SUMS and its ed25519 signature, trusted keys, the feed's index and a module's .modinfo; read by the router, written by authors and the feed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+# No unit tests inside the crate: its tests are tests/all.
+test = false
+doctest = false
+
+[dependencies]
+routeh-plugin-protocol.workspace = true
+# ed25519 of a bundle's list of digests and of a feed's index: the
+# router's pin.
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+thiserror.workspace = true

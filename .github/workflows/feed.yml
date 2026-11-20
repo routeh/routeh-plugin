@@ -1,0 +1,123 @@
+# The feed's run, called by the feed repository's workflow
+# (templates/feed/): the bundles every plugin proposed (its branch
+# plugin/<id>) signed into blobs/, index.json rebuilt from all blobs and
+# feed.toml and signed, committed to main, deployed to Pages
+# (docs/RELEASE.md). The feed's repository is the only writer of its
+# index, and this the only job that holds its key.
+
+name: feed
+
+on:
+  workflow_call:
+    inputs:
+      tools_ref:
+        description: "The ref of routeh-plugin whose routeh-plugin program runs"
+        type: string
+        default: main
+      refresh:
+        description: "Sign the index again with a new expires, even unchanged"
+        type: boolean
+        default: false
+      expires_days:
+        type: number
+        default: 90
+    secrets:
+      FEED_SIGNING_KEY:
+        description: "The feed's secret key, `ed25519-secret <base64>`"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sign:
+    runs-on: ubuntu-24.04
+    # Holds FEED_SIGNING_KEY: let it deploy from main only.
+    environment: feed
+    outputs:
+      refused: ${{ steps.run.outputs.refused }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: feed
+      - uses: actions/checkout@v4
+        with:
+          repository: routeh/routeh-plugin
+          ref: ${{ inputs.tools_ref }}
+          path: tools
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools
+      - name: The routeh-plugin program
+        working-directory: tools
+        run: cargo build -q --release --locked -p routeh-plugin-build --bin routeh-plugin
+      - name: What the plugins propose
+        working-directory: feed
+        run: |
+          incoming="$RUNNER_TEMP/incoming"
+          mkdir -p "$incoming"
+          git fetch -q --depth 1 origin '+refs/heads/plugin/*:refs/remotes/origin/plugin/*' || true
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/plugin/); do
+            id=${ref#origin/plugin/}
+            mkdir -p "$incoming/$id"
+            git archive "$ref" | tar -x -C "$incoming/$id" --wildcards '*.tar' 2>/dev/null || true
+            echo "$id: $(ls "$incoming/$id" | wc -l) bundle(s) proposed"
+          done
+      - id: run
+        name: Sign, rebuild the index
+        working-directory: feed
+        env:
+          FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
+          REFRESH: ${{ inputs.refresh && '--refresh' || '' }}
+          DAYS: ${{ inputs.expires_days }}
+        run: |
+          umask 077
+          printf '%s\n' "$FEED_SIGNING_KEY" > "$RUNNER_TEMP/feed.key"
+          umask 022
+          set +e
+          ../tools/target/release/routeh-plugin feed --feed . --key "$RUNNER_TEMP/feed.key" \
+            --incoming "$RUNNER_TEMP/incoming" --expires-days "$DAYS" $REFRESH | tee "$RUNNER_TEMP/run.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          rm -f "$RUNNER_TEMP/feed.key"
+          [ "$code" = 0 ] || [ "$code" = 1 ] || exit "$code"
+          grep -q '^refused' "$RUNNER_TEMP/run.log" && echo "refused=true" >> "$GITHUB_OUTPUT"
+          sed 's/^/- /' "$RUNNER_TEMP/run.log" >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit to main
+        working-directory: feed
+        run: |
+          git add -A blobs index.json index.json.sig
+          if git diff --cached --quiet; then echo "Nothing changed."; exit 0; fi
+          git -c user.name="feed" -c user.email="feed@users.noreply.github.com" \
+            commit -q -m "$(grep -E '^(added|index)' "$RUNNER_TEMP/run.log" | head -20)"
+          git push -q origin HEAD:main
+      - name: The site
+        run: |
+          mkdir -p site
+          cp -r feed/blobs feed/index.json feed/index.json.sig site/
+          touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - if: needs.sign.outputs.refused == 'true'
+        run: |
+          echo "::error::Some proposed bundles were refused: see the sign job's summary."
+          exit 1

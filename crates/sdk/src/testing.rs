@@ -188,6 +188,18 @@ impl Router {
         }
     }
 
+    /// Pings the plugin and waits for its `pong`. What the plugin sends
+    /// meanwhile is read next.
+    pub fn ping(&mut self) -> io::Result<()> {
+        self.send_text(channel::ping_line())?;
+        loop {
+            match self.read_message()? {
+                Message::Pong => return Ok(()),
+                other => self.pending.push_back(other),
+            }
+        }
+    }
+
     /// The next line the plugin sent, read as the router reads it.
     pub fn message(&mut self) -> io::Result<Message> {
         match self.pending.pop_front() {
@@ -222,6 +234,7 @@ impl Router {
             Message::Hello(_) => "hello",
             Message::State(_) => "state",
             Message::Done(_) => "done",
+            Message::Pong => "pong",
         };
         invalid(format!("{} sent {got}, not {wanted}", self.id))
     }

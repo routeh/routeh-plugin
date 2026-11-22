@@ -32,6 +32,16 @@ impl Stop {
             libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
             libc::signal(libc::SIGINT, handler as libc::sighandler_t);
         }
+        // Its parent is ujail: a jail that is killed would leave the
+        // service running beside the one procd starts in its place. Its
+        // end is a SIGTERM to the service. (A parent that ended before
+        // this line is not seen: in ujail the service's parent is outside
+        // its namespace, and getppid says 0 either way.)
+        #[cfg(target_os = "linux")]
+        // SAFETY: prctl with integer arguments changes only this process.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        }
         Self {
             signals: true,
             ..Self::default()

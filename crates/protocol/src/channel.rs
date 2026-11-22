@@ -2,7 +2,9 @@
 //! The channel): one JSON object a line over a Unix stream socket.
 //! The router sends `desired`, whole, and an `action` a person asked for;
 //! the plugin sends `hello` once, `state`, whole, whenever it changes, and
-//! `done` for each action. Only what is pure lives here: the text of
+//! `done` for each action. A plugin whose `hello` says `pings` also answers
+//! the router's `ping` with `pong`, and only such a plugin is asked. Only
+//! what is pure lives here: the text of
 //! `desired` and of an action, reading a line a plugin sent against its
 //! manifest, and cutting a stream into lines. Who connects is the
 //! caller's.
@@ -149,6 +151,35 @@ pub fn hello_line(plugin: &str, version: &str) -> String {
     format!("{}\n", Value::Object(whole))
 }
 
+/// The `hello` line of a plugin that answers pings: what the SDK sends. A
+/// plugin that does not say so is never pinged, since it may take a line
+/// it does not know for an error.
+pub fn hello_line_answering_pings(plugin: &str, version: &str) -> String {
+    let mut hello = Map::new();
+    hello.insert("pings".into(), Value::Bool(true));
+    hello.insert("plugin".into(), Value::from(plugin));
+    hello.insert("protocol".into(), Value::from(PROTOCOL));
+    hello.insert("version".into(), Value::from(version));
+    let mut whole = Map::new();
+    whole.insert("hello".into(), Value::Object(hello));
+    format!("{}\n", Value::Object(whole))
+}
+
+/// The line the router asks whether a plugin is alive with.
+pub fn ping_line() -> &'static str {
+    "{\"ping\":{}}\n"
+}
+
+/// The line a plugin answers a ping with.
+pub fn pong_line() -> &'static str {
+    "{\"pong\":{}}\n"
+}
+
+/// Whether a line from the router, without its end, is a ping.
+pub fn is_ping(line: &[u8]) -> bool {
+    line == b"{\"ping\":{}}"
+}
+
 /// The `state` line of a plugin with no values and no instances.
 pub fn state_line(digest: &str, settled: bool) -> String {
     state_line_with(digest, settled, &[])
@@ -265,6 +296,8 @@ pub enum Message {
     Hello(Hello),
     State(Report),
     Done(Done),
+    /// The answer to a ping.
+    Pong,
 }
 
 /// A plugin's answer to an action.
@@ -281,6 +314,9 @@ pub struct Hello {
     pub protocol: u64,
     pub plugin: String,
     pub version: String,
+    /// It answers `ping`. Absent in the `hello` of an older plugin.
+    #[serde(default)]
+    pub pings: bool,
 }
 
 /// What a plugin says it is, keeping only what its manifest declares.
@@ -460,6 +496,9 @@ fn read_as(line: &[u8], id: &str, declared: &Declared<'_>) -> Result<Message, Ch
             )));
         }
         return Ok(Message::Hello(hello));
+    }
+    if object.contains_key("pong") {
+        return Ok(Message::Pong);
     }
     if let Some(done) = object.remove("done") {
         let done: Done =

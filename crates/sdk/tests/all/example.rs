@@ -80,6 +80,47 @@ fn the_example_serves_until_it_is_terminated() {
     assert!(!socket.exists());
 }
 
+/// procd runs a service in ujail, its parent: a jail that is killed
+/// leaves the service to nobody, and procd starts another one. The
+/// service ends with its parent instead of running on beside the new one.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_example_ends_when_its_parent_does() {
+    let dir = TempDir::new().unwrap();
+    let socket = dir.path().join("minimal.sock");
+    let mut parent = Running(
+        Command::new("sh")
+            .arg("-c")
+            .arg("\"$0\" \"$1\" & echo $!; wait")
+            .arg(example())
+            .arg(&socket)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut said = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(parent.0.stdout.take().unwrap()),
+        &mut said,
+    )
+    .unwrap();
+    let service: i32 = said.trim().parse().unwrap();
+    let mut router = Router::connect(&socket, &manifest()).unwrap();
+    assert_eq!(router.hello().unwrap().plugin, "minimal");
+    parent.0.kill().unwrap();
+    parent.0.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // SAFETY: signal 0 only asks whether the process is there.
+    while unsafe { libc::kill(service, 0) } == 0 {
+        if Instant::now() >= deadline {
+            // SAFETY: the process this test made; it is not left behind.
+            unsafe { libc::kill(service, libc::SIGKILL) };
+            panic!("the service outlived its parent");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn the_example_wants_exactly_its_socket() {
     for args in [&[][..], &["a", "b"][..]] {

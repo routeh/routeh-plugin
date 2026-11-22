@@ -243,6 +243,47 @@ fn stops_when_told_and_takes_its_socket_away() {
 }
 
 #[test]
+fn a_run_whose_name_another_took_stops_and_leaves_that_one_serving() {
+    use std::os::unix::fs::MetadataExt;
+    // procd starts a new service while the old one still runs (its jail
+    // was killed): the new one takes the name, the old one is stopped.
+    let dir = TempDir::new().unwrap();
+    let socket = dir.path().join("demo.sock");
+    let serving = |stop: &Stop| {
+        let (socket, stop) = (socket.clone(), stop.clone());
+        std::thread::spawn(move || serve(&socket, Recorder::default(), &Log::memory("demo"), &stop))
+    };
+    let (old, new) = (Stop::new(), Stop::new());
+    let old_run = serving(&old);
+    Router::connect(&socket, &manifest())
+        .unwrap()
+        .hello()
+        .unwrap();
+    let first = std::fs::metadata(&socket).unwrap().ino();
+    let new_run = serving(&new);
+    assert!(eventually(
+        || std::fs::metadata(&socket).is_ok_and(|m| m.ino() != first)
+    ));
+    old.stop();
+    let (ended, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || ended.send(old_run.join().unwrap()));
+    done.recv_timeout(Duration::from_secs(5))
+        .expect("the old run did not end")
+        .unwrap();
+    assert!(
+        socket.exists(),
+        "the old run took the new one's socket away"
+    );
+    Router::connect(&socket, &manifest())
+        .unwrap()
+        .hello()
+        .unwrap();
+    new.stop();
+    new_run.join().unwrap().unwrap();
+    assert!(!socket.exists());
+}
+
+#[test]
 fn replaces_what_an_earlier_run_left_under_its_names() {
     let dir = TempDir::new().unwrap();
     let socket = dir.path().join("demo.sock");

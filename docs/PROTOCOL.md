@@ -59,7 +59,27 @@ The first line the plugin sends on every connection:
 
 `protocol` is the version of this contract, `1`; the router refuses a
 plugin that names another. `plugin` is the plugin's id, as its manifest
-says; `version` is its manifest's version.
+says; `version` is its manifest's version. A plugin that answers pings
+adds `"pings":true`; the SDK always does, so a plugin built with it needs
+nothing of its own. Without it the router never pings it.
+
+## `ping` and `pong`
+
+The shortest lines of the channel, on a connection whose `hello` said
+`pings`:
+
+```json
+{"ping":{}}
+{"pong":{}}
+```
+
+The router asks at most every 5 seconds per connection, only when that
+plugin sent no line of any kind in the last 5 seconds, and never asks
+again while one is unanswered. Any line counts as alive. After 15 seconds
+without a line the plugin is not answering: its tunnels stop carrying
+traffic, and it is alive again with its next line. The SDK answers on the
+thread that reads the connection, so a long `converge` is not a dead
+plugin, and a process that is stopped answers nothing.
 
 ## `desired`: what the router sends
 

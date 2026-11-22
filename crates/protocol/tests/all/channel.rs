@@ -400,3 +400,27 @@ fn a_plugin_that_goes_off_is_told_its_settings_without_an_instance() {
         assert_eq!(channel::emptied(text), None, "{text}");
     }
 }
+
+#[test]
+fn a_ping_and_its_pong_are_the_shortest_lines_of_the_channel() {
+    assert_eq!(channel::ping_line(), "{\"ping\":{}}\n");
+    assert_eq!(channel::pong_line(), "{\"pong\":{}}\n");
+    assert!(channel::is_ping(b"{\"ping\":{}}"));
+    assert!(!channel::is_ping(b"{\"pong\":{}}"));
+    assert!(!channel::is_ping(b"{\"desired\":{}}"));
+    assert_eq!(
+        channel::read_bare(b"{\"pong\":{}}", "demo").unwrap(),
+        channel::Message::Pong
+    );
+}
+
+#[test]
+fn a_hello_says_whether_the_plugin_answers_pings() {
+    let read = |line: String| match channel::read_bare(line.trim_end().as_bytes(), "demo") {
+        Ok(channel::Message::Hello(hello)) => hello.pings,
+        other => panic!("{other:?}"),
+    };
+    // A plugin of an older SDK says nothing of it.
+    assert!(!read(channel::hello_line("demo", "1")));
+    assert!(read(channel::hello_line_answering_pings("demo", "1")));
+}

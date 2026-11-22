@@ -89,6 +89,17 @@ impl Plugin for Ddns {
 After an action the SDK converges again and sends `state` if it
 changed. `examples/records.rs` is the whole of it.
 
+## Being alive
+
+Every plugin built with the SDK says in its `hello` that it answers
+pings, and answers them, with no code of its own. The answer comes from
+the thread that reads the connection, so a `converge` that takes a minute
+does not make the plugin look dead; a process that is stopped or gone
+answers nothing, and the router then stops sending traffic through its
+tunnels until it answers again. A `converge` that hangs for ever is not
+seen this way: it is the plugin's own to bound. `Router::ping` of the
+harness asks and waits for the answer.
+
 ## Tests without a router
 
 ```rust

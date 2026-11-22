@@ -3,6 +3,7 @@
 mod desired;
 mod example;
 mod log;
+mod ping;
 mod serve;
 mod state;
 mod stop;
